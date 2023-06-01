@@ -1,0 +1,354 @@
+variables:
+  SONAR_TOKEN: b8275246511c39f0fa2c70ac01cd5981ac346c59
+  SONAR_HOST_URL: https://sonarqube.tscloudapi.com
+  SONAR_KEY: Chem-MBR-API
+  AZ_ACR_REGISTRY_SERVER : scgchemacr.azurecr.io
+  AZ_ACR_NAME: scgchemacr
+
+# variables of each app service
+
+.common: &common
+  PROJ_DIR : SCG.CHEM.MBR/SCG.CHEM.MBR.COMMON.API
+  APPSERVICE_NAME: MBR-AppService-API-Common
+  IMAGE_NAME : mbr-common
+
+.transaction: &transaction
+  PROJ_DIR : SCG.CHEM.MBR/SCG.CHEM.MBR.TRANSACTION.API
+  APPSERVICE_NAME: MBR-AppService-API-Transaction
+  IMAGE_NAME : mbr-transaction
+
+.master: &master
+  PROJ_DIR : SCG.CHEM.MBR/SCG.CHEM.MBR.MASTER.API
+  APPSERVICE_NAME: MBR-AppService-API-Master
+  IMAGE_NAME : mbr-master
+
+# variables of each environment
+.dev_env: &dev_env
+  ENV: dev
+  APPSERVICE_ENV: DEV
+  RG_NAME: App-Modernization-MBR-DEV-EA-RG
+  DOCKERFILE: Dockerfile
+  AZ_SUBSCRIPTION: CHEM-Digital-ITOneService-Non-Prod
+
+.qas_env: &qas_env
+  ENV: qas
+  APPSERVICE_ENV: Non-Prod
+  RG_NAME: App-Modernization-MBR-Non-Prod-EA-RG
+  DOCKERFILE: Dockerfile
+  AZ_SUBSCRIPTION: CHEM-Digital-ITOneService-Non-Prod
+
+# .prd_env: &prd_env
+#   ENV: prd
+#   APPSERVICE_ENV: Production
+#   RG_NAME: App-Modernization-MBR-Prod-EA-RG
+#   DOCKERFILE: Dockerfile
+#   AZ_SUBSCRIPTION : CHEM-Digital-ITOneService-Prod
+
+
+stages:
+    - sonarqube
+    - build
+    - deploy
+#################################################### 
+
+sonarqube-scan:
+  image: mcr.microsoft.com/dotnet/sdk:6.0
+  stage: sonarqube
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - apt-get update
+    - apt-get install --yes openjdk-11-jre
+    - dotnet tool install --global dotnet-sonarscanner
+    - export PATH=$PATH:$HOME/.dotnet/tools
+    - cd SCG.CHEM.MBR
+    - dotnet sonarscanner begin /k:$SONAR_KEY /d:sonar.login=$SONAR_TOKEN /d:sonar.host.url=$SONAR_HOST_URL
+    - dotnet build
+    - dotnet sonarscanner end /d:sonar.login=$SONAR_TOKEN
+  allow_failure: true  
+  tags:
+    - pod-executor
+  only:
+    - develop
+
+#################################################### 
+
+.BUILD:
+  # image: gcr.io/kaniko-project/executor:debug
+  image: mcr.microsoft.com/azure-cli
+  when: manual
+  script: 
+  #   - mkdir -p /kaniko/.docker/acr
+  #   - echo $AZ_ACR_CONFIG > /kaniko/.docker/config.json
+  #   - cd $PROJ_DIR
+  #   - pwd
+  #   - >
+  #    /kaniko/executor 
+  #    --context $CI_PROJECT_DIR/SCG.CHEM.MBR
+  #    --dockerfile $DOCKERFILE
+  #    --destination $AZ_ACR_REGISTRY_SERVER/$IMAGE_NAME-$ENV:$CI_COMMIT_SHORT_SHA
+  #   #  --no-push
+    - cd $PROJ_DIR
+    - az login --service-principal --username $AZURE_USERNAME --password $AZURE_PASSWORD --tenant $AZURE_TENANTID
+    - az acr login -n $AZ_ACR_NAME -t
+    - az acr build --image $IMAGE_NAME-$ENV:$CI_COMMIT_SHORT_SHA -r $AZ_ACR_NAME $CI_PROJECT_DIR/SCG.CHEM.MBR -f $DOCKERFILE
+
+  tags:
+    - pod-executor
+
+.DEPLOY:
+  image: mcr.microsoft.com/azure-cli
+  script:
+    - echo "SET azure application id to APPLICATION_ID"
+    - echo "SET azure application secret id to APPLICATION_SECRET"
+    - echo "SET azure tenant id to TENANT_ID"
+    - echo $RG_NAME
+    - >
+      az login --service-principal 
+      --username $AZURE_USERNAME
+      --password $AZURE_PASSWORD
+      --tenant $AZURE_TENANTID
+    - > 
+      az webapp config container set 
+      --docker-custom-image-name $AZ_ACR_REGISTRY_SERVER/$IMAGE_NAME-$ENV:$CI_COMMIT_SHORT_SHA
+      --docker-registry-server-password $DOCKER_REGISTRY_SERVER_PASSWORD
+      --docker-registry-server-url $DOCKER_REGISTRY_SERVER_URL
+      --docker-registry-server-user $DOCKER_REGISTRY_SERVER_USERNAME 
+      --name $APPSERVICE_NAME-$APPSERVICE_ENV
+      --resource-group $RG_NAME
+      --subscription $AZ_SUBSCRIPTION
+  tags:
+    - pod-executor
+
+
+####################################################
+
+# build:auth-dev:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *auth
+#     <<: *dev_env
+#   only:
+#     - develop
+
+
+# deploy:auth-dev:
+#   needs: ["build:auth-dev"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *auth
+#     <<: *dev_env
+#   only:
+#     - develop
+
+####################################################
+
+build:master-dev:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *master
+    <<: *dev_env
+  only:
+    - develop
+
+
+deploy:master-dev:
+  needs: ["build:master-dev"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *master
+    <<: *dev_env
+  only:
+    - develop
+
+####################################################
+
+build:common-dev:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *common
+    <<: *dev_env
+  only:
+    - develop
+
+
+deploy:common-dev:
+  needs: ["build:common-dev"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *common
+    <<: *dev_env
+  only:
+    - develop
+    
+####################################################
+
+build:transaction-dev:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *transaction
+    <<: *dev_env
+  only:
+    - develop
+
+
+deploy:transaction-dev:
+  needs: ["build:transaction-dev"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *transaction
+    <<: *dev_env
+  only:
+    - develop
+
+####################################################
+#QAS
+####################################################
+
+build:master-qas:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *master
+    <<: *qas_env
+  only:
+    - qas
+
+
+deploy:master-qas:
+  needs: ["build:master-qas"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *master
+    <<: *qas_env
+  only:
+    - qas
+
+####################################################
+
+build:common-qas:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *common
+    <<: *qas_env
+  only:
+    - qas
+
+
+deploy:common-qas:
+  needs: ["build:common-qas"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *common
+    <<: *qas_env
+  only:
+    - qas
+    
+####################################################
+
+build:transaction-qas:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *transaction
+    <<: *qas_env
+  only:
+    - qas
+
+
+deploy:transaction-qas:
+  needs: ["build:transaction-qas"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *transaction
+    <<: *qas_env
+  only:
+    - qas
+####################################################
+
+#PRD
+####################################################
+
+# build:master-prd:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *master
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+
+
+# deploy:master-prd:
+#   needs: ["build:master-prd"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *master
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+
+####################################################
+
+# build:common-prd:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *common
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+
+
+# deploy:common-prd:
+#   needs: ["build:common-prd"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *common
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+    
+####################################################
+
+# build:transaction-prd:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *transaction
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+
+
+# deploy:transaction-prd:
+#   needs: ["build:transaction-prd"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *transaction
+#     <<: *prd_env
+#   only:
+#     - master_mbr
+####################################################
+
+

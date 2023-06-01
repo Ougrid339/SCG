@@ -1,0 +1,180 @@
+variables:
+  SONAR_TOKEN: 707619b6f40e6be4727fe73fb3e894da8f3f6ce8
+  SONAR_HOST_URL: https://sonarqube.tscloudapi.com
+  SONAR_KEY: Chem-SSP-API
+  AZ_ACR_REGISTRY_SERVER : scgchemacr.azurecr.io
+
+# variables of each app service
+.auth: &auth
+  PROJ_DIR : SCG.CHEM.SSPLSP/SCG.CHEM.SSPLSP.AUTH
+  APPSERVICE_NAME: SSP-AppService-API-Auth-Non-Prod
+  IMAGE_NAME : ssplsp-auth
+
+.constraint: &constraint
+  PROJ_DIR : SCG.CHEM.SSPLSP/SCG.CHEM.SSPLSP.CONSTRAINT.API
+  APPSERVICE_NAME: SSP-AppService-API-Constraint-Non-Prod
+  IMAGE_NAME : ssplsp-constraint
+
+.unconstraint: &unconstraint
+  PROJ_DIR : SCG.CHEM.SSPLSP/SCG.CHEM.SSPLSP.UNCONSTRAINT.API
+  APPSERVICE_NAME: SSP-AppService-API-Unconstraint-Non-Prod
+  IMAGE_NAME : ssplsp-constraint
+
+.master: &master
+  PROJ_DIR : SCG.CHEM.SSPLSP/SCG.CHEM.SSPLSP.MASTER.API
+  APPSERVICE_NAME: SSP-AppService-API-Master-Non-Prod
+  IMAGE_NAME : ssplsp-master
+
+# variables of each environment
+.dev_env: &dev_env
+  ENV: dev
+  RG_NAME: App-Modernization-SSP-Non-Prod-EA-RG
+  DOCKERFILE: Dockerfile
+  AZ_SUBSCRIPTION: CHEM-Digital-ITOneService-Non-Prod
+
+.prd_env: &prd_env
+  ENV: prd
+  RG_NAME: App-Modernization-SSP-Prod-EA-RG
+  DOCKERFILE: Dockerfile.prod
+  AZ_SUBSCRIPTION : CHEM-Digital-ITOneService-Prod
+
+
+stages:
+    - sonarqube
+    - build
+    - deploy
+#################################################### 
+
+sonarqube-scan:
+  image: mcr.microsoft.com/dotnet/sdk:6.0
+  stage: sonarqube
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - apt-get update
+    - apt-get install --yes openjdk-11-jre
+    - dotnet tool install --global dotnet-sonarscanner
+    - export PATH=$PATH:$HOME/.dotnet/tools
+    - cd SCG.CHEM.SSPLSP
+    - dotnet sonarscanner begin /k:$SONAR_KEY /d:sonar.login=$SONAR_TOKEN /d:sonar.host.url=$SONAR_HOST_URL
+    - dotnet build
+    - dotnet sonarscanner end /d:sonar.login=$SONAR_TOKEN
+  allow_failure: true  
+  tags:
+    - pod-executor
+  only:
+    - develop_ssp
+
+#################################################### 
+
+.BUILD:
+  image: gcr.io/kaniko-project/executor:debug
+  when: manual
+  script: 
+    - mkdir -p /kaniko/.docker/acr
+    - echo $AZ_ACR_CONFIG > /kaniko/.docker/config.json
+    - cd $PROJ_DIR
+    - pwd
+    - >
+     /kaniko/executor 
+     --context $CI_PROJECT_DIR/SCG.CHEM.SSPLSP
+     --dockerfile $DOCKERFILE
+     --destination $AZ_ACR_REGISTRY_SERVER/$IMAGE_NAME-$ENV:$CI_COMMIT_SHORT_SHA
+    #  --no-push
+  tags:
+    - pod-executor
+
+.DEPLOY:
+  image: mcr.microsoft.com/azure-cli
+  script:
+    - echo "SET azure application id to APPLICATION_ID"
+    - echo "SET azure application secret id to APPLICATION_SECRET"
+    - echo "SET azure tenant id to TENANT_ID"
+    - echo $RG_NAME
+    - >
+      az login --service-principal 
+      --username $AZURE_USERNAME
+      --password $AZURE_PASSWORD
+      --tenant $AZURE_TENANTID
+    - > 
+      az webapp config container set 
+      --docker-custom-image-name $AZ_ACR_REGISTRY_SERVER/$IMAGE_NAME-$ENV:$CI_COMMIT_SHORT_SHA
+      --docker-registry-server-password $DOCKER_REGISTRY_SERVER_PASSWORD
+      --docker-registry-server-url $DOCKER_REGISTRY_SERVER_URL
+      --docker-registry-server-user $DOCKER_REGISTRY_SERVER_USERNAME 
+      --name $APPSERVICE_NAME
+      --resource-group $RG_NAME
+      --subscription $AZ_SUBSCRIPTION
+  tags:
+    - pod-executor
+
+
+####################################################
+
+# build:auth-dev:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *auth
+#     <<: *dev_env
+#   only:
+#     - develop
+
+
+# deploy:auth-dev:
+#   needs: ["build:auth-dev"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *auth
+#     <<: *dev_env
+#   only:
+#     - develop
+
+####################################################
+
+# build:constraint-dev:
+#   extends: .BUILD
+#   stage: build
+#   variables:
+#     <<: *constraint
+#     <<: *dev_env
+#   only:
+#     - develop
+
+
+# deploy:constraint-dev:
+#   needs: ["build:tms-dev"]
+#   extends: .DEPLOY
+#   stage: deploy
+#   variables:
+#     <<: *constraint
+#     <<: *dev_env
+#   only:
+#     - develop
+####################################################
+
+build:master-dev:
+  extends: .BUILD
+  stage: build
+  variables:
+    <<: *master
+    <<: *dev_env
+  only:
+    - develop_ssp
+
+
+deploy:master-dev:
+  needs: ["build:master-dev"]
+  extends: .DEPLOY
+  stage: deploy
+  variables:
+    <<: *master
+    <<: *dev_env
+  only:
+    - develop_ssp

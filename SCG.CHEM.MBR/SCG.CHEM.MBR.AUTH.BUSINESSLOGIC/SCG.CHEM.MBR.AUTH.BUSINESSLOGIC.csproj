@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="NLog" Version="4.7.13" />
+		<PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="6.15.1" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\SCG.CHEM.MBR.COMMON\SCG.CHEM.MBR.COMMON.csproj" />
+		<ProjectReference Include="..\SCG.CHEM.MBR.DATAACCESS\SCG.CHEM.MBR.DATAACCESS.csproj" />
+		<ProjectReference Include="..\SCG.CHEM.SSPLSP.DATAACCESS\SCG.CHEM.SSPLSP.DATAACCESS.csproj" />
+	</ItemGroup>
+
+</Project>
